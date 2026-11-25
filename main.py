@@ -1,505 +1,502 @@
 #!/usr/bin/env python3
-"""The World in One Day -- Tuesday 24 November 2026. (Upgraded build.)
+"""The World in One Day -- front-page generator, written from scratch.
 
-Draws a newspaper front page summing up the world news of
-24 November 2026 as a 1024x1024 PNG. Pure standard library:
-the PNG writer below uses only zlib and struct, and every glyph
-comes from a small 5x7 bitmap font defined in this file.
+Renders a 1024x1024 newspaper front page for Tuesday 24 November 2026
+with six verified news stories. Pure Python standard library: a hand-made
+5x7 bitmap font, a small canvas of drawing primitives, and a hand-rolled
+PNG encoder. The output is deterministic -- running the program twice
+produces byte-identical files. Nothing is fetched from the network.
 
-Six stories, each checked against the wires (Reuters / BBC / AP /
-CNN / Al Jazeera) on 25 November 2026:
-  1. Nvidia's board reinstates Jensen Huang as CEO, reversing
-     itself days after ruling out his return, under pressure
-     from President Trump; shares jump 31%, the best day since
-     2003, adding almost $1 trillion in value; Nasdaq +6.4%.
-  2. NATO sends an AWACS early-warning jet to Poland after three
-     Russian Kh-101 cruise missiles landed there on Friday
-     20 November; SACEUR authorised the deployment.
-  3. Ukraine says seven sea drones sank the Russian corvette
-     Merkury in the Libyan port of Benghazi, and hit the cargo
-     ship Angara; a Ka-27 helicopter aboard was destroyed.
-  4. COP31, the longest climate summit in history, ends in
-     Antalya with no deal: the first COP to collapse since
-     Copenhagen in 2009.
-  5. Israeli strikes kill three in Gaza, including UNRWA worker
-     Adel al-Helo, hit near a water well in Jabalia camp;
-     Oxfam says 99% of Gaza is contaminated.
-  6. Iran vows to use all its tools against a US naval blockade;
-     Washington sanctions 22 entities and eight people in its
-     shadow banks, and Trump threatens to sink ships that test it.
-
-Run:  MAKEFUN_OUTPUT_DIR=out python3 main.py
-Writes entry.png into the output directory. Deterministic:
-two runs produce byte-identical output (no time, no random).
+Usage:
+    MAKEFUN_OUTPUT_DIR=out python3 main.py
 """
 
-import math
 import os
 import struct
 import zlib
 
-W, H = 1024, 1024
+# ------------------------------------------------------------------ palette
+PAPER   = (246, 241, 230)   # newsprint cream
+INK     = (18, 18, 18)      # near-black
+NAVY    = (18, 53, 94)      # masthead blue
+NAVY_DK = (12, 38, 68)      # radar disc
+GOLD    = (217, 164, 65)    # masthead date
+RED     = (179, 35, 42)     # kickers, rules, alerts
+TEAL    = (15, 118, 110)    # war-at-sea header
+ORANGE  = (194, 65, 12)     # climate header
+BLUE    = (30, 58, 138)     # sub-headline blue
+GREEN   = (21, 128, 61)     # rising chart
+GREY    = (128, 128, 128)
+GREY_DK = (74, 74, 74)
+SKY     = (147, 197, 253)   # globe
+WHITE   = (255, 255, 255)
 
-# ---------------------------------------------------------------- palette
-PAPER = (248, 244, 232)
-INK = (26, 26, 26)
-NAVY = (20, 53, 92)
-RED = (179, 38, 30)
-GREEN = (31, 122, 74)
-GOLD = (198, 138, 28)
-BLUE = (43, 106, 160)
-TEAL = (0, 120, 113)
-ORANGE = (214, 110, 26)
-GREY = (110, 108, 96)
-CREAM = (233, 227, 210)
-WHITE = (255, 255, 255)
-SKY = (178, 210, 232)
-SEA = (36, 90, 140)
-SMOKE = (190, 186, 172)
-BLIP = (120, 255, 140)
-
-# ---------------------------------------------------------------- 5x7 font
-# Seven rows of five cells per glyph; '#' is ink, '.' is blank.
+# ------------------------------------------------------------- bitmap font
+# Every glyph is 5 columns wide and 7 rows tall. '#' is ink, '.' is blank.
+# Only capitals, digits and the punctuation this page actually uses.
 GLYPHS = {
-    "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
-    "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
-    "C": ("01110", "10001", "10000", "10000", "10000", "10001", "01110"),
-    "D": ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
-    "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
-    "F": ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
-    "G": ("01110", "10001", "10000", "10111", "10001", "10001", "01111"),
-    "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
-    "I": ("01110", "00100", "00100", "00100", "00100", "00100", "01110"),
-    "J": ("00111", "00010", "00010", "00010", "00010", "10010", "01100"),
-    "K": ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
-    "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
-    "M": ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
-    "N": ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
-    "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
-    "P": ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
-    "Q": ("01110", "10001", "10001", "10001", "10101", "10010", "01101"),
-    "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
-    "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
-    "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
-    "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
-    "V": ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
-    "W": ("10001", "10001", "10001", "10101", "10101", "11011", "10001"),
-    "X": ("10001", "10001", "01010", "00100", "01010", "10001", "10001"),
-    "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
-    "Z": ("11111", "00001", "00010", "00100", "01000", "10000", "11111"),
-    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
-    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
-    "2": ("01110", "10001", "00001", "00110", "01000", "10000", "11111"),
-    "3": ("11111", "00010", "00100", "00010", "00001", "10001", "01110"),
-    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
-    "5": ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
-    "6": ("00110", "01000", "10000", "11110", "10001", "10001", "01110"),
-    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
-    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
-    "9": ("01110", "10001", "10001", "01111", "00001", "00010", "01100"),
-    " ": ("00000", "00000", "00000", "00000", "00000", "00000", "00000"),
-    ".": ("00000", "00000", "00000", "00000", "00000", "01100", "01100"),
-    ",": ("00000", "00000", "00000", "00000", "01100", "00100", "01000"),
-    ":": ("00000", "01100", "01100", "00000", "01100", "01100", "00000"),
-    ";": ("00000", "01100", "01100", "00000", "01100", "00100", "01000"),
-    "'": ("00100", "00100", "01000", "00000", "00000", "00000", "00000"),
-    "-": ("00000", "00000", "00000", "01110", "00000", "00000", "00000"),
-    "!": ("00100", "00100", "00100", "00100", "00100", "00000", "00100"),
-    "?": ("01110", "10001", "00001", "00110", "00100", "00000", "00100"),
-    "%": ("11001", "11010", "00010", "00100", "01000", "01011", "10011"),
-    "(": ("00010", "00100", "01000", "01000", "01000", "00100", "00010"),
-    ")": ("01000", "00100", "00010", "00010", "00010", "00100", "01000"),
-    "/": ("00001", "00010", "00010", "00100", "01000", "01000", "10000"),
-    "+": ("00000", "00100", "00100", "01110", "00100", "00100", "00000"),
-    "&": ("01100", "10010", "10100", "01000", "10101", "10010", "01101"),
-    "=": ("00000", "00000", "11111", "00000", "11111", "00000", "00000"),
-    "*": ("00000", "10101", "01110", "11111", "01110", "10101", "00000"),
-    "$": ("00100", "01111", "10100", "01110", "00101", "11110", "00100"),
+    "A": (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "B": ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."),
+    "C": (".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."),
+    "D": ("####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."),
+    "E": ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
+    "F": ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
+    "G": (".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".####"),
+    "H": ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "I": (".###.", "..#..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "J": ("..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##.."),
+    "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
+    "L": ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
+    "M": ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
+    "N": ("#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"),
+    "O": (".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
+    "Q": (".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"),
+    "R": ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
+    "S": (".####", "#....", "#....", ".###.", "....#", "....#", "####."),
+    "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
+    "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "V": ("#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."),
+    "W": ("#...#", "#...#", "#...#", "#.#.#", "#.#.#", "#.#.#", ".#.#."),
+    "X": ("#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"),
+    "Y": ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."),
+    "Z": ("#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"),
+    "0": (".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###."),
+    "1": ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "2": (".###.", "#...#", "....#", "..##.", ".#...", "#....", "#####"),
+    "3": ("####.", "....#", "....#", ".###.", "....#", "....#", "####."),
+    "4": ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
+    "5": ("#####", "#....", "####.", "....#", "....#", "#...#", ".###."),
+    "6": ("..##.", ".#...", "#....", "####.", "#...#", "#...#", ".###."),
+    "7": ("#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#..."),
+    "8": (".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."),
+    "9": (".###.", "#...#", "#...#", ".####", "....#", "...#.", ".##.."),
+    " ": (".....", ".....", ".....", ".....", ".....", ".....", "....."),
+    ".": (".....", ".....", ".....", ".....", ".....", ".##..", ".##.."),
+    ",": (".....", ".....", ".....", ".....", ".##..", ".##..", ".#..."),
+    ":": (".....", ".##..", ".##..", ".....", ".##..", ".##..", "....."),
+    ";": (".....", ".##..", ".##..", ".....", ".##..", ".##..", ".#..."),
+    "!": ("..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."),
+    "?": (".###.", "#...#", "....#", "..##.", "..#..", ".....", "..#.."),
+    "'": ("..#..", "..#..", ".#...", ".....", ".....", ".....", "....."),
+    '"': (".#.#.", ".#.#.", ".....", ".....", ".....", ".....", "....."),
+    "-": (".....", ".....", ".....", ".###.", ".....", ".....", "....."),
+    "+": (".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."),
+    "%": ("##..#", "##.#.", "...#.", "..#..", ".#...", "#.##.", "#..##"),
+    "$": ("..#..", ".####", "#.#..", ".###.", "..#.#", "####.", "..#.."),
+    "*": (".....", "#.#.#", ".###.", "#####", ".###.", "#.#.#", "....."),
+    "/": ("....#", "....#", "...#.", "..#..", ".#...", ".#...", "#...."),
+    "(": ("...#.", "..#..", ".#...", ".#...", ".#...", "..#..", "...#."),
+    ")": (".#...", "..#..", "...#.", "...#.", "...#.", "..#..", ".#..."),
+    "&": (".##..", "#..#.", "#.#..", ".#...", "#.#.#", "#..#.", ".##.#"),
+    "=": (".....", ".....", "#####", ".....", "#####", ".....", "....."),
+    "#": (".#.#.", ".#.#.", "#####", ".#.#.", "#####", ".#.#.", ".#.#."),
+    "_": (".....", ".....", ".....", ".....", ".....", ".....", "#####"),
 }
 
 
-def glyph_width(text, scale):
-    """Pixel width of text at scale (each glyph is 6 units wide)."""
-    return len(text) * 6 * scale - scale
-
-
-def wrap_words(text, max_width, scale):
-    """Greedy word wrap; returns lines that fit max_width."""
-    out, current = [], ""
-    for word in text.split(" "):
-        trial = word if not current else current + " " + word
-        if glyph_width(trial, scale) <= max_width or not current:
-            current = trial
-        else:
-            out.append(current)
-            current = word
-    if current:
-        out.append(current)
-    return out
-
-
 # ------------------------------------------------------------------- canvas
-class Page:
-    """An RGB pixel buffer with tiny drawing helpers."""
+class Sheet:
+    """An RGB pixel buffer with tiny drawing helpers. Origin is top-left."""
 
-    def __init__(self, w, h, bg):
-        self.w, self.h = w, h
-        self.px = bytearray(bg * w * h)
+    def __init__(self, width, height, bg):
+        self.w = width
+        self.h = height
+        self.buf = bytearray(bytes(bg) * (width * height))
 
-    def dot(self, x, y, color):
+    def _off(self, x, y):
+        return (y * self.w + x) * 3
+
+    def px(self, x, y, color):
         if 0 <= x < self.w and 0 <= y < self.h:
-            i = (y * self.w + x) * 3
-            self.px[i], self.px[i + 1], self.px[i + 2] = color
+            o = self._off(x, y)
+            self.buf[o:o + 3] = bytes(color)
 
-    def box(self, x, y, w, h, color):
-        for yy in range(y, y + h):
-            for xx in range(x, x + w):
-                self.dot(xx, yy, color)
+    def fill(self, x, y, w, h, color):
+        x0 = max(x, 0)
+        y0 = max(y, 0)
+        x1 = min(x + w, self.w)
+        y1 = min(y + h, self.h)
+        if x1 <= x0 or y1 <= y0:
+            return
+        row = bytes(color) * (x1 - x0)
+        for yy in range(y0, y1):
+            o = self._off(x0, yy)
+            self.buf[o:o + len(row)] = row
 
-    def border(self, x, y, w, h, color, t=2):
-        self.box(x, y, w, t, color)
-        self.box(x, y + h - t, w, t, color)
-        self.box(x, y, t, h, color)
-        self.box(x + w - t, y, t, h, color)
+    def frame(self, x, y, w, h, color, thick=3):
+        self.fill(x, y, w, thick, color)
+        self.fill(x, y + h - thick, w, thick, color)
+        self.fill(x, y, thick, h, color)
+        self.fill(x + w - thick, y, thick, h, color)
 
-    def hbar(self, x, y, length, color, t=1):
-        self.box(x, y, length, t, color)
+    def hline(self, x0, x1, y, color, thick=1):
+        self.fill(min(x0, x1), y, abs(x1 - x0) + 1, thick, color)
 
-    def vbar(self, x, y, length, color, t=1):
-        self.box(x, y, t, length, color)
+    def vline(self, x, y0, y1, color, thick=1):
+        self.fill(x, min(y0, y1), thick, abs(y1 - y0) + 1, color)
 
-    def segment(self, x0, y0, x1, y1, color, t=1):
-        """Bresenham segment with a square brush of thickness t."""
-        dx, dy = abs(x1 - x0), abs(y1 - y0)
+    def line(self, x0, y0, x1, y1, color, thick=1):
+        """Bresenham line with a square brush of side `thick`."""
+        dx = abs(x1 - x0)
+        dy = -abs(y1 - y0)
         sx = 1 if x0 < x1 else -1
         sy = 1 if y0 < y1 else -1
-        err = dx - dy
+        err = dx + dy
         x, y = x0, y0
-        half = t // 2
         while True:
-            for oy in range(-half, half + 1):
-                for ox in range(-half, half + 1):
-                    self.dot(x + ox, y + oy, color)
+            self.fill(x - thick // 2, y - thick // 2, thick, thick, color)
             if x == x1 and y == y1:
                 break
             e2 = 2 * err
-            if e2 > -dy:
-                err -= dy
+            if e2 >= dy:
+                err += dy
                 x += sx
-            if e2 < dx:
+            if e2 <= dx:
                 err += dx
                 y += sy
 
-    def disc(self, cx, cy, r, color, fill=True):
+    def disc(self, cx, cy, r, color):
         for yy in range(cy - r, cy + r + 1):
             for xx in range(cx - r, cx + r + 1):
-                d2 = (xx - cx) ** 2 + (yy - cy) ** 2
-                if fill:
-                    if d2 <= r * r:
-                        self.dot(xx, yy, color)
-                elif abs(d2 - r * r) <= r:
-                    self.dot(xx, yy, color)
+                if (xx - cx) ** 2 + (yy - cy) ** 2 <= r * r:
+                    self.px(xx, yy, color)
 
-    def poly(self, points, color):
-        """Filled polygon via the even-odd scanline rule."""
-        top = min(p[1] for p in points)
-        bottom = max(p[1] for p in points)
-        n = len(points)
-        for y in range(top, bottom + 1):
-            xs = []
-            for i in range(n):
-                ax, ay = points[i]
-                bx, by = points[(i + 1) % n]
-                if ay == by:
-                    continue
-                lo, hi = (ay, by) if ay < by else (by, ay)
-                if lo <= y < hi:
-                    xs.append(ax + (bx - ax) * (y - ay) / (by - ay))
-            xs.sort()
-            for j in range(0, len(xs) - 1, 2):
-                for x in range(int(xs[j]), int(xs[j + 1]) + 1):
-                    self.dot(x, y, color)
+    def ring(self, cx, cy, r, color, thick=2):
+        for yy in range(cy - r - thick, cy + r + thick + 1):
+            for xx in range(cx - r - thick, cx + r + thick + 1):
+                d = ((xx - cx) ** 2 + (yy - cy) ** 2) ** 0.5
+                if abs(d - r) <= thick / 2:
+                    self.px(xx, yy, color)
 
-    def glyph(self, x, y, ch, scale, color):
-        rows = GLYPHS.get(ch, GLYPHS["?"])
-        for r in range(7):
-            for c in range(5):
-                if rows[r][c] == "1":
-                    self.box(x + c * scale, y + r * scale, scale, scale, color)
+    def polyline(self, pts, color, thick=2):
+        for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+            self.line(ax, ay, bx, by, color, thick)
 
-    def text(self, x, y, s, scale, color, align="left"):
-        """Draw text; align left/center/right around x. Returns width."""
-        s = s.upper()
-        w = glyph_width(s, scale)
-        if align == "center":
-            x -= w // 2
-        elif align == "right":
-            x -= w
+    # ------------------------------------------------------------------ text
+    def text(self, x, y, s, scale, color):
+        """Draw one line; returns the pixel width drawn."""
         cx = x
-        for ch in s:
-            self.glyph(cx, y, ch, scale, color)
+        for ch in s.upper():
+            glyph = GLYPHS.get(ch, GLYPHS[" "])
+            for row_i, row in enumerate(glyph):
+                for col_i, bit in enumerate(row):
+                    if bit == "#":
+                        self.fill(cx + col_i * scale, y + row_i * scale,
+                                  scale, scale, color)
             cx += 6 * scale
-        return w
+        return cx - x
 
-    def para(self, x, y, text, max_width, scale, color):
-        """Wrapped paragraph; returns the y just past the last line."""
-        for line in wrap_words(text, max_width, scale):
-            self.text(x, y, line, scale, color)
-            y += 9 * scale
+    def text_w(self, s, scale):
+        return len(s) * 6 * scale
+
+    def centred(self, y, s, scale, color, x0=0, x1=None):
+        if x1 is None:
+            x1 = self.w
+        w = self.text_w(s, scale)
+        self.text(x0 + (x1 - x0 - w) // 2, y, s, scale, color)
+
+    def para(self, x, y, s, scale, max_w, leading, color):
+        """Greedy word-wrap paragraph; returns the y just below the text."""
+        for ln in wrap(self, s, scale, max_w):
+            self.text(x, y, ln, scale, color)
+            y += leading
         return y
 
 
-# ------------------------------------------------------------- illustrations
-def draw_chip(pg, x, y, s, body, pin):
-    """A processor: square body, four pins a side, gold die."""
-    pg.box(x, y, s, s, body)
-    pg.border(x, y, s, s, INK, 3)
-    for i in range(4):
-        off = 10 + i * (s - 20) // 3
-        pg.box(x + off, y - 7, 5, 7, pin)
-        pg.box(x + off, y + s, 5, 7, pin)
-        pg.box(x - 7, y + off, 7, 5, pin)
-        pg.box(x + s, y + off, 7, 5, pin)
-    inner = s * 2 // 5
-    ix = x + (s - inner) // 2
-    iy = y + (s - inner) // 2
-    pg.box(ix, iy, inner, inner, pin)
-    pg.border(ix, iy, inner, inner, INK, 2)
-
-
-def draw_chart(pg, x, y, w, h, color):
-    """Axes, a rising line with an arrowhead, and a +31% tag."""
-    pg.hbar(x, y + h, w, INK, 2)
-    pg.vbar(x, y, h, INK, 2)
-    pts = [(x + 8, y + h - 10), (x + w // 4, y + h - 24),
-           (x + w // 2, y + h - 16), (x + 3 * w // 4, y + h - 46),
-           (x + w - 16, y + 12)]
-    for a, b in zip(pts, pts[1:]):
-        pg.segment(a[0], a[1], b[0], b[1], color, 4)
-    ex, ey = pts[-1]
-    pg.poly([(ex, ey), (ex - 15, ey - 3), (ex - 3, ey + 12)], color)
-    pg.text(x + w - 112, y + h - 28, "+31%", 3, color)
-
-
-def draw_radar(pg, cx, cy, r):
-    """Radar scope: rings, cross, sweep, blips, and a jet above."""
-    pg.disc(cx, cy, r, NAVY, fill=True)
-    for frac in (1.0, 0.66, 0.33):
-        pg.disc(cx, cy, int(r * frac), GREEN, fill=False)
-    pg.hbar(cx - r, cy, 2 * r, GREEN, 1)
-    pg.vbar(cx, cy - r, 2 * r, GREEN, 1)
-    pg.segment(cx, cy, cx + int(r * 0.7), cy - int(r * 0.7), GREEN, 2)
-    for bx, by, br in ((18, -24, 4), (-28, 14, 4), (32, 20, 3)):
-        pg.disc(cx + bx, cy + by, br, BLIP, fill=True)
-    # jet silhouette flying over the scope
-    px, py = cx, cy - r - 22
-    pg.poly([(px - 28, py + 6), (px - 8, py - 2), (px - 8, py + 8)], INK)
-    pg.poly([(px + 28, py + 6), (px + 8, py - 2), (px + 8, py + 8)], INK)
-    pg.box(px - 15, py - 2, 30, 6, INK)
-    pg.poly([(px + 15, py), (px + 25, py - 2), (px + 25, py + 2)], INK)
-    pg.box(px - 2, py + 8, 4, 9, INK)
-
-
-def draw_ship(pg, x, y, w, h):
-    """A corvette on the waves, a drone overhead, blast at the stern."""
-    hull_y = y + h - 34
-    pg.box(x + 8, hull_y, w - 30, 16, INK)
-    pg.poly([(x + w - 22, hull_y), (x + w - 22, hull_y + 16),
-             (x + w - 56, hull_y + 16)], INK)
-    pg.box(x + 22, hull_y - 22, 10, 22, INK)          # mast
-    pg.box(x + 16, hull_y - 28, 22, 6, INK)           # mast top
-    pg.box(x + 52, hull_y - 12, 32, 12, INK)          # deck house
-    for i in range(3):
-        pg.hbar(x, y + h - 8 - i * 6, w, BLUE, 2)
-    # blast starburst at the stern
-    ex, ey = x + w - 16, hull_y - 6
-    for ang in range(0, 360, 30):
-        dx = int(17 * math.cos(math.radians(ang)))
-        dy = int(17 * math.sin(math.radians(ang)))
-        pg.segment(ex, ey, ex + dx, ey + dy, ORANGE, 3)
-    pg.disc(ex, ey, 7, GOLD, fill=True)
-    # quadcopter drone above the bow
-    dx, dy = x + 16, y + 12
-    pg.box(dx, dy, 20, 5, INK)
-    pg.disc(dx + 2, dy, 5, INK, fill=False)
-    pg.disc(dx + 18, dy, 5, INK, fill=False)
-    pg.vbar(dx + 10, dy + 5, 6, INK, 2)
-
-
-def draw_globe(pg, cx, cy, r):
-    """A globe split by a jagged crack, stamped NO DEAL."""
-    pg.disc(cx, cy, r, SKY, fill=True)
-    pg.disc(cx, cy, r, BLUE, fill=False)
-    pg.hbar(cx - r, cy, 2 * r, BLUE, 2)
-    pg.hbar(cx - int(r * 0.87), cy - r // 2, int(r * 1.74), BLUE, 2)
-    pg.hbar(cx - int(r * 0.87), cy + r // 2, int(r * 1.74), BLUE, 2)
-    pg.vbar(cx, cy - r, 2 * r, BLUE, 2)
-    pts = [(cx - 5, cy - r), (cx + 7, cy - r // 2), (cx - 7, cy),
-           (cx + 7, cy + r // 2), (cx - 3, cy + r)]
-    for a, b in zip(pts, pts[1:]):
-        pg.segment(a[0], a[1], b[0], b[1], RED, 4)
-    pg.text(cx - 34, cy + r + 8, "NO DEAL", 2, RED)
-
-
-def draw_skyline(pg, x, y, w, h):
-    """City blocks with a column of smoke curling up."""
-    base = y + h - 10
-    pg.box(x, base - 44, 30, 44, GREY)
-    pg.box(x + 38, base - 62, 26, 62, INK)
-    pg.box(x + 72, base - 32, 34, 32, GREY)
-    pg.box(x + 114, base - 52, 24, 52, INK)
-    pg.vbar(x + 38 + 13, base - 78, 16, INK, 2)
-    for sx, sy, sr in ((x + 42, y + 10, 9), (x + 54, y, 11), (x + 68, y - 10, 13)):
-        pg.disc(sx, sy, sr, SMOKE, fill=True)
-    pg.hbar(x, base, w, INK, 2)
-
-
-def draw_tanker(pg, x, y, w, h):
-    """An oil tanker halted behind a red-and-white blockade barrier."""
-    hull_y = y + h - 30
-    pg.box(x + 6, hull_y, w - 12, 14, RED)
-    pg.box(x + w - 46, hull_y - 22, 30, 22, INK)
-    pg.box(x + 14, hull_y - 16, 38, 16, INK)
-    pg.disc(x + 30, hull_y + 7, 4, GOLD, fill=True)
-    pg.disc(x + 46, hull_y + 7, 4, GOLD, fill=True)
-    for i in range(3):
-        pg.hbar(x, y + h - 8 - i * 6, w, SEA, 2)
-    # blockade barrier across the top of the panel
-    pg.box(x, y + 6, w, 12, RED)
-    for i in range(0, w, 16):
-        pg.box(x + i, y + 6, 8, 12, WHITE)
-    pg.vbar(x + 8, y + 18, 10, INK, 3)
-    pg.vbar(x + w - 8, y + 18, 10, INK, 3)
-
-
-# -------------------------------------------------------------------- page
-def draw_page():
-    pg = Page(W, H, PAPER)
-
-    # ---- masthead
-    pg.box(0, 0, W, 128, NAVY)
-    pg.text(W // 2, 22, "THE WORLD IN ONE DAY", 5, WHITE, align="center")
-    pg.text(W // 2, 88, "TUESDAY, 24 NOVEMBER 2026", 2, GOLD, align="center")
-    pg.text(W // 2, 110, "SIX STORIES FROM A DAY THAT SHOOK THE WORLD",
-            1, GOLD, align="center")
-    pg.hbar(0, 128, W, RED, 6)
-
-    # ---- lead story: Nvidia / Huang
-    lx, ly, lw, lh = 24, 148, 604, 320
-    pg.border(lx, ly, lw, lh, INK, 3)
-    pg.text(lx + 20, ly + 16, "BUSINESS  *  TECHNOLOGY", 1, RED)
-    pg.text(lx + 20, ly + 44, "HUANG IS BACK", 6, INK)
-    pg.text(lx + 20, ly + 96, "NVIDIA REINSTATES ITS CHIEF", 3, NAVY)
-    pg.para(lx + 20, ly + 138,
-            "Jensen Huang returns as chief executive after the board "
-            "reverses itself under pressure from President Trump, days "
-            "after ruling out his comeback. Nvidia shares jump 31% in "
-            "a day, adding almost $1 trillion in value.",
-            lw - 40, 2, INK)
-    draw_chip(pg, lx + 36, ly + 240, 60, NAVY, GOLD)
-    draw_chart(pg, lx + 180, ly + 236, 380, 64, GREEN)
-    pg.text(lx + 180, ly + 306, "BEST DAY SINCE 2003 * NASDAQ +6.4%", 1, GREY)
-
-    # ---- right column: NATO / Poland
-    rx, ry, rw, rh = 652, 148, 324, 320
-    pg.border(rx, ry, rw, rh, INK, 3)
-    pg.text(rx + 16, ry + 16, "EUROPE  *  SECURITY", 1, RED)
-    pg.text(rx + 16, ry + 44, "NATO WATCHES", 3, INK)
-    pg.text(rx + 16, ry + 74, "THE EAST", 3, INK)
-    draw_radar(pg, rx + rw // 2, ry + 176, 54)
-    pg.text(rx + rw // 2, ry + 240, "3 X KH-101", 1, RED, align="center")
-    pg.para(rx + 16, ry + 258,
-            "The alliance sends an AWACS early-warning jet to "
-            "Poland after three Russian Kh-101 cruise missiles "
-            "landed there on Friday.",
-            rw - 32, 1, INK)
-    pg.hbar(rx + 16, ry + 294, rw - 32, GREY, 1)
-    pg.text(rx + 16, ry + 302, "SACEUR AUTHORISED THE MOVE", 1, GREY)
-
-    # ---- bottom grid: four stories
-    panels = [
-        (24, 492, "WAR AT SEA", "FAR FROM UKRAINE",
-         "Ukraine says seven sea drones sank the Russian "
-         "corvette Merkury off Benghazi, and hit the cargo "
-         "ship Angara. A Ka-27 helicopter aboard was destroyed.",
-         "ship", TEAL),
-        (522, 492, "CLIMATE", "COP31 ENDS WITH NO DEAL",
-         "The longest COP in history ends in Antalya with no "
-         "deal on fossil fuels, the first climate summit to "
-         "collapse since Copenhagen in 2009. The blame game begins.",
-         "globe", ORANGE),
-        (24, 736, "MIDDLE EAST", "THREE KILLED IN GAZA",
-         "Israeli strikes kill three, including UNRWA worker "
-         "Adel al-Helo, hit near a water well in Jabalia camp. "
-         "Oxfam says 99% of Gaza is contaminated.",
-         "skyline", RED),
-        (522, 736, "ENERGY  *  IRAN", "TEHRAN DEFIES BLOCKADE",
-         "Iran vows to use all its tools against a US naval "
-         "blockade. Washington sanctions 22 entities and eight "
-         "people in its shadow banks. Trump vows to sink ships "
-         "that test it.",
-         "tanker", NAVY),
-    ]
-    pw, ph = 478, 220
-    for (px, py, kicker, headline, body, art, accent) in panels:
-        pg.border(px, py, pw, ph, INK, 3)
-        pg.box(px + 3, py + 3, pw - 6, 26, accent)
-        pg.text(px + 14, py + 10, kicker, 1, WHITE)
-        pg.text(px + 14, py + 42, headline, 2, INK)
-        pg.para(px + 14, py + 78, body, 296, 2, INK)
-        if art == "ship":
-            pg.text(px + 330, py + 62, "7 SEA DRONES", 1, TEAL)
-            draw_ship(pg, px + 330, py + 84, 132, 116)
-        elif art == "globe":
-            draw_globe(pg, px + 396, py + 108, 42)
-        elif art == "skyline":
-            draw_skyline(pg, px + 330, py + 84, 132, 116)
+def wrap(sheet, s, scale, max_w):
+    words = s.split(" ")
+    lines = []
+    cur = ""
+    for word in words:
+        trial = word if not cur else cur + " " + word
+        if sheet.text_w(trial, scale) <= max_w or not cur:
+            cur = trial
         else:
-            draw_tanker(pg, px + 330, py + 84, 132, 116)
+            lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return lines
 
-    # ---- footer
-    pg.hbar(24, 972, 976, INK, 2)
-    pg.text(W // 2, 984, "ALL STORIES AS REPORTED ON 24 NOVEMBER 2026  *  "
-            "SOURCES: REUTERS, BBC, AP", 1, GREY, align="center")
-    return pg
+
+# -------------------------------------------------------------- illustrations
+# Every picture on the page is drawn from rectangles, lines and discs.
+# Nothing is loaded from disk; nothing is random.
+
+def draw_chip(sh, x, y):
+    """Nvidia-style chip: gold pins around a navy die with a gold core."""
+    for i in range(4):
+        px = x + 8 + i * 14
+        sh.fill(px, y - 7, 6, 7, GOLD)
+        sh.fill(px, y + 56, 6, 7, GOLD)
+        py = y + 8 + i * 14
+        sh.fill(x - 7, py, 7, 6, GOLD)
+        sh.fill(x + 56, py, 7, 6, GOLD)
+    sh.fill(x, y, 56, 56, NAVY)
+    sh.fill(x + 18, y + 18, 20, 20, GOLD)
+
+
+def draw_chart(sh, x, y, w, h):
+    """Share-price chart: axes plus a rising green line with a small dip."""
+    sh.vline(x, y, y + h, INK, 2)
+    sh.hline(x, x + w, y + h, INK, 2)
+    pts = [(x + 6, y + h - 10), (x + 70, y + h - 24), (x + 140, y + h - 18),
+           (x + 205, y + h - 32), (x + 265, y + h - 48), (x + 330, y + h - 58),
+           (x + w - 8, y + 6)]
+    sh.polyline(pts, GREEN, 3)
+    ex, ey = pts[-1]
+    sh.line(ex, ey, ex - 12, ey - 4, GREEN, 3)
+    sh.line(ex, ey, ex - 6, ey + 12, GREEN, 3)
+
+
+def draw_radar(sh, cx, cy, r):
+    """AWACS radar scope with range rings, cross hairs and three blips."""
+    sh.disc(cx, cy, r, NAVY_DK)
+    for rr in (r, r * 2 // 3, r // 3):
+        sh.ring(cx, cy, rr, (64, 120, 140), 1)
+    sh.hline(cx - r, cx + r, cy, (64, 120, 140), 1)
+    sh.vline(cx, cy - r, cy + r, (64, 120, 140), 1)
+    for bx, by in [(cx - 22, cy - 14), (cx + 16, cy + 10), (cx + 8, cy - 26)]:
+        sh.disc(bx, by, 3, (74, 222, 128))
+    # tiny aircraft silhouette just above the scope
+    sh.hline(cx - 26, cx + 26, cy - r - 10, INK, 3)
+
+
+def draw_drone(sh, x, y):
+    """Small quadcopter: central body, four rotor bars, two legs."""
+    sh.fill(x + 8, y + 6, 16, 8, INK)
+    for dx, dy in [(0, 0), (26, 0), (0, 12), (26, 12)]:
+        sh.line(x + dx - 4, y + dy, x + dx + 10, y + dy, INK, 2)
+    sh.line(x + 4, y + 14, x + 4, y + 26, INK, 2)
+    sh.line(x + 28, y + 14, x + 28, y + 26, INK, 2)
+
+
+def draw_ship(sh, x, y):
+    """Corvette side view with funnel, bow line and three wave lines."""
+    sh.fill(x, y + 22, 150, 16, INK)
+    sh.line(x + 150, y + 22, x + 168, y + 30, INK, 3)
+    sh.fill(x + 18, y + 6, 34, 16, INK)
+    sh.fill(x + 62, y - 4, 12, 26, INK)
+    for wy in (y + 44, y + 50, y + 56):
+        sh.hline(x - 6, x + 168, wy, BLUE, 2)
+
+
+SPOKES = [(12, 0), (9, 9), (0, 12), (-9, 9),
+          (-12, 0), (-9, -9), (0, -12), (9, -9)]
+
+
+def draw_burst(sh, cx, cy, color):
+    """Eight-spoke explosion starburst."""
+    for dx, dy in SPOKES:
+        sh.line(cx, cy, cx + dx, cy + dy, color, 3)
+    sh.disc(cx, cy, 4, color)
+
+
+def draw_globe(sh, cx, cy, r):
+    """Cracked globe: blue disc, latitude lines, red zig-zag crack."""
+    sh.disc(cx, cy, r, SKY)
+    sh.ring(cx, cy, r, BLUE, 2)
+    for dy in (-r // 2, 0, r // 2):
+        half = int((r * r - dy * dy) ** 0.5)
+        sh.hline(cx - half, cx + half, cy + dy, BLUE, 2)
+    crack = [(cx + 6, cy - r + 4), (cx - 6, cy - r // 2), (cx + 8, cy),
+             (cx - 6, cy + r // 2), (cx + 4, cy + r - 6)]
+    sh.polyline(crack, RED, 3)
+
+
+def draw_bars(sh, x, baseline, heights, colors):
+    """Simple bar chart, bars sitting on `baseline`."""
+    bx = x
+    for h, c in zip(heights, colors):
+        sh.fill(bx, baseline - h, 26, h, c)
+        bx += 34
+
+
+def draw_smoke(sh, x, y):
+    """Three grey puffs of smoke."""
+    for dx, dy, r in [(0, 0, 12), (16, -8, 15), (34, 2, 11)]:
+        sh.disc(x + dx, y + dy, r, GREY)
+
+
+def draw_tanker(sh, x, y):
+    """Blockade-runner tanker: red hull, two black containers, waves."""
+    sh.fill(x, y + 18, 130, 14, RED)
+    sh.fill(x + 14, y + 2, 24, 16, INK)
+    sh.fill(x + 52, y + 2, 24, 16, INK)
+    for wy in (y + 38, y + 44):
+        sh.hline(x - 8, x + 138, wy, BLUE, 2)
+
+
+def draw_barrier(sh, x, y, w):
+    """Red-and-white striped boom between two black posts."""
+    sh.fill(x, y, 8, 22, INK)
+    sh.fill(x + w - 8, y, 8, 22, INK)
+    for i in range(0, w - 16, 16):
+        c = RED if (i // 16) % 2 == 0 else WHITE
+        sh.fill(x + 8 + i, y + 4, 14, 8, c)
+
+
+# -------------------------------------------------------------------- layout
+def panel(sh, x, y, w, h):
+    sh.fill(x, y, w, h, PAPER)
+    sh.frame(x, y, w, h, INK, 3)
+
+
+def header_bar(sh, x, y, w, color, label):
+    sh.fill(x, y, w, 28, color)
+    sh.text(x + 14, y + 8, label, 2, WHITE)
+
+
+def masthead(sh):
+    sh.fill(16, 16, 992, 118, NAVY)
+    sh.centred(30, "THE WORLD IN ONE DAY", 6, WHITE, 16, 1008)
+    sh.centred(86, "TUESDAY, 24 NOVEMBER 2026", 2, GOLD, 16, 1008)
+    sh.centred(108, "SIX STORIES FROM A DAY THAT SHOOK THE WORLD", 1, GOLD,
+               16, 1008)
+    sh.fill(16, 134, 992, 6, RED)
+
+
+def lead_story(sh):
+    """Story 1 -- Nvidia: Huang is back, shares +31%."""
+    panel(sh, 24, 150, 576, 318)
+    sh.text(40, 164, "BUSINESS * TECHNOLOGY", 1, RED)
+    sh.text(40, 182, "HUANG IS BACK", 7, INK)
+    sh.text(40, 240, "NVIDIA REINSTATES ITS CHIEF", 3, BLUE)
+    sh.para(40, 272,
+            "JENSEN HUANG RETURNS AS CHIEF EXECUTIVE AFTER THE BOARD "
+            "REVERSES ITSELF UNDER PRESSURE FROM PRESIDENT TRUMP, DAYS "
+            "AFTER RULING OUT HIS COMEBACK. NVIDIA SHARES JUMP 31% IN A "
+            "DAY, ADDING ALMOST $1 TRILLION IN VALUE.",
+            2, 544, 20, INK)
+    draw_chip(sh, 48, 392)
+    draw_chart(sh, 176, 380, 404, 68)
+    sh.text(498, 396, "+31%", 3, GREEN)
+    sh.text(176, 454, "BEST DAY SINCE 2003 * NASDAQ +6.4%", 1, GREY_DK)
+
+
+def nato_panel(sh):
+    """Story 2 -- NATO sends an AWACS to Poland after three Kh-101s."""
+    panel(sh, 624, 150, 376, 318)
+    sh.text(638, 164, "EUROPE * SECURITY", 1, RED)
+    sh.text(638, 182, "NATO WATCHES", 4, INK)
+    sh.text(638, 214, "THE EAST", 4, INK)
+    draw_radar(sh, 812, 300, 38)
+    sh.centred(344, "3 X KH-101", 2, RED, 624, 1000)
+    sh.para(638, 362,
+            "THE ALLIANCE SENDS AN AWACS EARLY-WARNING JET TO POLAND "
+            "AFTER THREE RUSSIAN KH-101 CRUISE MISSILES LANDED THERE ON "
+            "FRIDAY.",
+            2, 348, 17, INK)
+    sh.hline(638, 986, 452, INK, 1)
+    sh.text(638, 458, "SACEUR AUTHORISED THE MOVE", 1, GREY_DK)
+
+
+def sea_panel(sh):
+    """Story 3 -- seven sea drones sink the corvette Merkury."""
+    panel(sh, 24, 484, 476, 220)
+    header_bar(sh, 24, 484, 476, TEAL, "WAR AT SEA")
+    sh.text(38, 522, "FAR FROM UKRAINE", 3, INK)
+    sh.para(38, 552,
+            "UKRAINE SAYS SEVEN SEA DRONES SANK THE RUSSIAN CORVETTE "
+            "MERKURY OFF BENGHAZI, AND HIT THE CARGO SHIP ANGARA. A KA-27 "
+            "HELICOPTER ABOARD WAS DESTROYED.",
+            2, 250, 16, INK)
+    sh.text(330, 540, "7 SEA DRONES", 1, TEAL)
+    draw_drone(sh, 380, 556)
+    draw_ship(sh, 312, 622)
+    draw_burst(sh, 462, 612, ORANGE)
+
+
+def climate_panel(sh):
+    """Story 4 -- COP31 in Antalya ends with no deal."""
+    panel(sh, 524, 484, 476, 220)
+    header_bar(sh, 524, 484, 476, ORANGE, "CLIMATE")
+    sh.text(538, 522, "COP31 ENDS WITH NO DEAL", 3, INK)
+    sh.para(538, 552,
+            "THE LONGEST COP IN HISTORY ENDS IN ANTALYA WITH NO DEAL ON "
+            "FOSSIL FUELS, THE FIRST CLIMATE SUMMIT TO COLLAPSE SINCE "
+            "COPENHAGEN IN 2009. THE BLAME GAME BEGINS.",
+            2, 260, 18, INK)
+    draw_globe(sh, 905, 600, 48)
+    sh.centred(662, "NO DEAL", 2, RED, 830, 986)
+
+
+def gaza_panel(sh):
+    """Story 5 -- three killed in Gaza, including an UNRWA worker."""
+    panel(sh, 24, 720, 476, 220)
+    header_bar(sh, 24, 720, 476, RED, "MIDDLE EAST")
+    sh.text(38, 758, "THREE KILLED IN GAZA", 3, INK)
+    sh.para(38, 788,
+            "ISRAELI STRIKES KILL THREE, INCLUDING UNRWA WORKER ADEL "
+            "AL-HELO, HIT NEAR A WATER WELL IN JABALIA CAMP. OXFAM SAYS "
+            "99% OF GAZA IS CONTAMINATED.",
+            2, 250, 18, INK)
+    draw_smoke(sh, 360, 800)
+    draw_bars(sh, 330, 912, [46, 78, 58, 88], [GREY, GREY_DK, GREY, INK])
+
+
+def iran_panel(sh):
+    """Story 6 -- Tehran defies the US naval blockade."""
+    panel(sh, 524, 720, 476, 220)
+    header_bar(sh, 524, 720, 476, NAVY, "ENERGY * IRAN")
+    sh.text(538, 758, "TEHRAN DEFIES BLOCKADE", 3, INK)
+    sh.para(538, 788,
+            "IRAN VOWS TO USE ALL ITS TOOLS AGAINST A US NAVAL BLOCKADE. "
+            "WASHINGTON SANCTIONS 22 ENTITIES AND EIGHT PEOPLE IN ITS "
+            "SHADOW BANKS. TRUMP VOWS TO SINK SHIPS THAT TEST IT.",
+            2, 280, 17, INK)
+    draw_barrier(sh, 840, 800, 130)
+    draw_tanker(sh, 830, 872)
+
+
+def footer(sh):
+    sh.hline(24, 1000, 952, INK, 2)
+    sh.centred(964,
+               "ALL STORIES AS REPORTED ON 24 NOVEMBER 2026 * SOURCES: "
+               "REUTERS, BBC, AP, CNN, AL JAZEERA",
+               1, GREY_DK, 24, 1000)
+
+
+def build():
+    sh = Sheet(1024, 1024, PAPER)
+    sh.frame(10, 10, 1004, 1004, INK, 2)
+    masthead(sh)
+    lead_story(sh)
+    nato_panel(sh)
+    sea_panel(sh)
+    climate_panel(sh)
+    gaza_panel(sh)
+    iran_panel(sh)
+    footer(sh)
+    return sh
 
 
 # ------------------------------------------------------------------ PNG out
-def chunk(kind, data):
+def _chunk(kind, data):
     out = struct.pack(">I", len(data)) + kind + data
     out += struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
     return out
 
 
-def encode_png(pg):
+def encode_png(sh):
+    """True-colour PNG, filter 0 on every scanline. No timestamps."""
     raw = bytearray()
-    for y in range(pg.h):
-        raw.append(0)  # filter: none
-        raw += pg.px[y * pg.w * 3:(y + 1) * pg.w * 3]
-    ihdr = struct.pack(">IIBBBBB", pg.w, pg.h, 8, 2, 0, 0, 0)
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
-            + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-            + chunk(b"IEND", b""))
-
-
-def validate_png(data):
-    """Fail loudly if the output is not a valid 1024x1024 PNG <= 1 MiB."""
-    if data[:8] != b"\x89PNG\r\n\x1a\n":
-        raise SystemExit("invalid PNG signature")
-    if len(data) > 1048576:
-        raise SystemExit("entry.png exceeds 1 MiB")
-    w, h = struct.unpack(">II", data[16:24])
-    if (w, h) != (W, H):
-        raise SystemExit("entry.png is %dx%d, expected 1024x1024" % (w, h))
-    if data[-12:] != chunk(b"IEND", b""):
-        raise SystemExit("PNG missing valid IEND chunk")
+    stride = sh.w * 3
+    for y in range(sh.h):
+        raw.append(0)
+        raw += sh.buf[y * stride:(y + 1) * stride]
+    ihdr = struct.pack(">IIBBBBB", sh.w, sh.h, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n"
+            + _chunk(b"IHDR", ihdr)
+            + _chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+            + _chunk(b"IEND", b""))
 
 
 def main():
     out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "out")
     os.makedirs(out_dir, exist_ok=True)
-    data = encode_png(draw_page())
-    validate_png(data)
+    data = encode_png(build())
     path = os.path.join(out_dir, "entry.png")
     with open(path, "wb") as f:
         f.write(data)
